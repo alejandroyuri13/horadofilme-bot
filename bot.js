@@ -1,4 +1,5 @@
 const express = require('express');
+const { chromium } = require('playwright');
 require('dotenv').config();
 
 // ============================================================
@@ -86,88 +87,105 @@ async function enviarAlertaFalha(venda, motivo) {
 }
 
 // ============================================================
-// TOKEN HAVOKTV — via API direta (sem navegador)
+// SESSÃO PERSISTENTE DO HAVOKTV
 // ============================================================
-let havokToken = null;
-let tokenExpiraEm = 0;
-let obtendoToken = false;
+let sessao = null;
+let iniciandoSessao = false;
 
-const HAVOKTV_BASE = 'https://havoktv.top';
-const HAVOKTV_HEADERS = {
-  'Content-Type': 'application/json',
-  'Accept': 'application/json',
-  'x-app-version': '3.81',
-  'locale': 'pt',
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-};
-
-async function obterToken(tentativa = 1) {
-  if (obtendoToken) {
-    await new Promise(r => setTimeout(r, 3000));
-    return havokToken;
+// Renova a sessão automaticamente a cada 10 horas (tokens expiram)
+const RENOVAR_SESSAO_MS = 10 * 60 * 60 * 1000;
+setInterval(async () => {
+  if (sessao && !processando) {
+    log('🔄 Renovação periódica da sessão HavokTV...');
+    await invalidarSessao();
+    try {
+      await iniciarSessao();
+    } catch (e) {
+      log(`⚠️  Renovação automática falhou: ${e.message}. Será tentada na próxima venda.`);
+    }
   }
-  obtendoToken = true;
-  log('🔄 Autenticando no HavokTV via API...');
+}, RENOVAR_SESSAO_MS);
 
-  const endpoints = ['/api/auth/login', '/api/auth', '/api/login'];
-  const bodies = [
-    { username: HAVOKTV_USER, password: HAVOKTV_PASS },
-    { user: HAVOKTV_USER, pass: HAVOKTV_PASS },
-    { email: HAVOKTV_USER, password: HAVOKTV_PASS }
-  ];
+async function iniciarSessao() {
+  if (iniciandoSessao) {
+    await new Promise(r => setTimeout(r, 5000));
+    return sessao;
+  }
+  iniciandoSessao = true;
+  log('🔄 Iniciando sessão no HavokTV...');
 
+  let browser;
   try {
-    for (const endpoint of endpoints) {
-      for (const body of bodies) {
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-infobars',
+        '--window-size=1280,800'
+      ]
+    });
+
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 800 },
+      locale: 'pt-BR'
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+    const page = await context.newPage();
+    let token = null;
+
+    page.on('response', async (response) => {
+      if (response.url().includes('/api/auth/')) {
         try {
-          const res = await fetch(HAVOKTV_BASE + endpoint, {
-            method: 'POST',
-            headers: HAVOKTV_HEADERS,
-            body: JSON.stringify(body)
-          });
-          if (!res.ok) continue;
-          const json = await res.json();
-          const token = json?.token || json?.data?.token || json?.access_token;
-          if (token) {
-            havokToken = 'Bearer ' + token;
-            tokenExpiraEm = Date.now() + 9 * 60 * 60 * 1000;
-            log(`✅ Token HavokTV obtido via ${endpoint}!`);
-            return havokToken;
-          }
+          const json = await response.json();
+          if (json?.token) token = 'Bearer ' + json.token;
+          if (json?.data?.token) token = 'Bearer ' + json.data.token;
         } catch {}
       }
+    });
+
+    await page.goto('https://havoktv.top', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForSelector('input[type="text"], input[type="email"], input:not([type="hidden"])', { timeout: 30000 });
+
+    const inputs = await page.locator('input:not([type="hidden"])').all();
+    if (inputs.length < 2) throw new Error('Campos de login não encontrados no HavokTV');
+    await inputs[0].fill(HAVOKTV_USER);
+    await inputs[1].fill(HAVOKTV_PASS);
+    await page.locator('button[type="submit"]').click();
+    await page.waitForTimeout(6000);
+
+    if (!token) {
+      throw new Error('Token não capturado. Verifique usuário/senha do HavokTV.');
     }
-    throw new Error('Nenhum endpoint de autenticação retornou token válido');
+
+    sessao = { browser, page, token, iniciadaEm: new Date() };
+    log('✅ Sessão HavokTV iniciada!');
+    return sessao;
+
+  } catch (err) {
+    if (browser) { try { await browser.close(); } catch {} }
+    throw err;
   } finally {
-    obtendoToken = false;
+    iniciandoSessao = false;
   }
 }
 
-async function getToken() {
-  if (havokToken && Date.now() < tokenExpiraEm) return havokToken;
-  return await obterToken();
+async function getSessao() {
+  if (!sessao) return await iniciarSessao();
+  return sessao;
 }
 
 async function invalidarSessao() {
-  havokToken = null;
-  tokenExpiraEm = 0;
-  log('🔄 Token invalidado.');
-}
-
-async function iniciarSessao() {
-  return await getToken();
-}
-
-// Renovação periódica a cada 9 horas
-setInterval(async () => {
-  if (havokToken && !processando) {
-    log('🔄 Renovação periódica do token HavokTV...');
-    await invalidarSessao();
-    try { await getToken(); } catch (e) {
-      log(`⚠️  Renovação automática falhou: ${e.message}`);
-    }
+  if (sessao) {
+    try { await sessao.browser.close(); } catch {}
+    sessao = null;
+    log('🔄 Sessão invalidada.');
   }
-}, 9 * 60 * 60 * 1000);
+}
 
 // ============================================================
 // CRIAR CLIENTE NO HAVOKTV (com retry)
@@ -176,42 +194,53 @@ async function criarCliente(packageId, tentativa = 1) {
   const MAX = 3;
 
   try {
-    const token = await getToken();
-    const usuario = Math.floor(1000000 + Math.random() * 9000000).toString();
-    const senha   = Math.floor(1000000 + Math.random() * 9000000).toString();
+    const { page, token } = await getSessao();
 
-    const res = await fetch(HAVOKTV_BASE + '/api/customers', {
-      method: 'POST',
-      headers: { ...HAVOKTV_HEADERS, 'Authorization': token },
-      body: JSON.stringify({
-        server_id: SERVER_ID,
-        package_id: packageId,
-        username: usuario,
-        password: senha,
-        connections: 3,
-        bouquets: '',
-        parent_can_edit_personal_data: 'YES'
-      })
-    });
+    const resultado = await page.evaluate(async ({ packageId, token, serverId }) => {
+      const usuario = Math.floor(1000000 + Math.random() * 9000000).toString();
+      const senha   = Math.floor(1000000 + Math.random() * 9000000).toString();
 
-    if (res.status === 401) {
-      log('🔄 Token expirado, renovando...');
+      const res = await fetch('/api/customers', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'x-app-version': '3.81',
+          'locale': 'pt',
+          'Authorization': token
+        },
+        body: JSON.stringify({
+          server_id: serverId,
+          package_id: packageId,
+          username: usuario,
+          password: senha,
+          connections: 3,
+          bouquets: '',
+          parent_can_edit_personal_data: 'YES'
+        })
+      });
+
+      const data = await res.json();
+      return { status: res.status, data, usuario, senha };
+    }, { packageId, token, serverId: SERVER_ID });
+
+    if (resultado.status === 401) {
+      log('🔄 Token expirado, renovando sessão...');
       await invalidarSessao();
       if (tentativa < MAX) return criarCliente(packageId, tentativa + 1);
-      throw new Error('Token inválido após renovação');
+      throw new Error('Sessão inválida após renovação');
     }
 
-    const data = await res.json();
-
-    if (res.status !== 200 && res.status !== 201) {
-      throw new Error(`HavokTV retornou ${res.status}: ${JSON.stringify(data)}`);
+    if (resultado.status !== 200 && resultado.status !== 201) {
+      throw new Error(`HavokTV retornou ${resultado.status}: ${JSON.stringify(resultado.data)}`);
     }
 
-    const u = data?.data?.username || usuario;
-    const s = data?.data?.password || senha;
+    const usuario = resultado.data?.data?.username || resultado.usuario;
+    const senha   = resultado.data?.data?.password || resultado.senha;
 
-    log(`✅ Credencial criada: ${u}`);
-    return { usuario: u, senha: s };
+    log(`✅ Credencial criada: ${usuario}`);
+    return { usuario, senha };
 
   } catch (err) {
     if (tentativa < MAX) {
@@ -625,26 +654,25 @@ const dashboard = `<!DOCTYPE html>
 <!-- Modal reenvio de email -->
 <div class="modal-overlay" id="modalReenvio">
   <div class="modal">
-    <h2>🎬 Criar Acesso e Enviar Email</h2>
+    <h2>📧 Reenviar Email de Acesso</h2>
     <label>Email do cliente</label>
     <input type="email" id="reenvioEmail" placeholder="cliente@email.com">
     <label>Nome do cliente</label>
     <input type="text" id="reenvioNome" placeholder="Nome Completo">
+    <label>Usuário IPTV</label>
+    <input type="text" id="reenvioUsuario" placeholder="ex: 4058037">
+    <label>Senha IPTV</label>
+    <input type="text" id="reenvioSenha" placeholder="ex: 7660711">
     <label>Plano</label>
     <select id="reenvioPlano">
-      <option value="Hora do Filme [1 MÊS]">Hora do Filme [1 MÊS]</option>
-      <option value="Hora do Filme [3 MESES]">Hora do Filme [3 MESES]</option>
-      <option value="Hora do Filme [6 MESES]">Hora do Filme [6 MESES]</option>
-      <option value="Hora do Filme [ANUAL]">Hora do Filme [ANUAL]</option>
-      <option value="Hora do Filme [PLUS]">Hora do Filme [PLUS]</option>
-      <option value="TelaMax | 1MÊS">TelaMax | 1MÊS</option>
-      <option value="TelaMax | 3 MESES">TelaMax | 3 MESES</option>
-      <option value="TelaMax | 6 MESES">TelaMax | 6 MESES</option>
-      <option value="TelaMax | ANUAL">TelaMax | ANUAL</option>
+      <option value="Plano Mensal">Plano Mensal</option>
+      <option value="Plano 3 meses">Plano 3 meses</option>
+      <option value="Plano 6 meses">Plano 6 meses</option>
+      <option value="Plano 12 meses">Plano 12 meses</option>
     </select>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="fecharModalReenvio()">Cancelar</button>
-      <button class="btn-primary" onclick="enviarReenvio()">🚀 Criar Acesso e Enviar</button>
+      <button class="btn-primary" onclick="enviarReenvio()">Enviar Email</button>
     </div>
   </div>
 </div>
@@ -783,30 +811,24 @@ document.getElementById('modalReenvio').addEventListener('click', e => {
 });
 
 async function enviarReenvio() {
-  const email = document.getElementById('reenvioEmail').value.trim();
-  const nome  = document.getElementById('reenvioNome').value.trim() || 'Cliente';
-  const plano = document.getElementById('reenvioPlano').value;
+  const email   = document.getElementById('reenvioEmail').value.trim();
+  const nome    = document.getElementById('reenvioNome').value.trim() || 'Cliente';
+  const usuario = document.getElementById('reenvioUsuario').value.trim();
+  const senha   = document.getElementById('reenvioSenha').value.trim();
+  const plano   = document.getElementById('reenvioPlano').value;
 
-  if (!email) { toast('⚠️ Preencha o email do cliente', 'warn'); return; }
-
-  const btn = document.querySelector('#modalReenvio .btn-primary');
-  btn.textContent = '⏳ Criando acesso...';
-  btn.disabled = true;
+  if (!email || !usuario || !senha) { toast('⚠️ Preencha email, usuário e senha', 'warn'); return; }
 
   try {
     const r = await fetch('/api/reenviar', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ email, nome, plano })
+      body: JSON.stringify({ email, nome, usuario, senha, plano })
     });
     const d = await r.json();
-    if (d.ok) { toast('✅ Acesso criado e email enviado!', 'ok'); fecharModalReenvio(); }
+    if (d.ok) { toast('✅ Email enviado com sucesso!', 'ok'); fecharModalReenvio(); }
     else       { toast('❌ Erro: ' + d.erro, 'err'); }
   } catch(e) { toast('❌ Falha na requisição', 'err'); }
-  finally {
-    btn.textContent = '🚀 Criar Acesso e Enviar';
-    btn.disabled = false;
-  }
 }
 
 async function reconectar() {
@@ -880,7 +902,7 @@ app.get('/api/status', (req, res) => {
   res.json({
     bot: 'HoraDoFilme',
     status: 'online',
-    sessaoHavokTV: (havokToken && Date.now() < tokenExpiraEm) ? 'ativa' : 'inativa',
+    sessaoHavokTV: sessao ? 'ativa' : 'inativa',
     vendasNaFila: fila.length,
     processando,
     uptime: process.uptime()
@@ -914,32 +936,15 @@ app.get('/logs/stream', (req, res) => {
   });
 });
 
-// Criar acesso e enviar email manualmente
+// Reenviar email manualmente
 app.post('/api/reenviar', async (req, res) => {
-  const { email, nome, plano } = req.body;
-  if (!email || !plano) {
-    return res.json({ ok: false, erro: 'Campos obrigatórios: email, plano' });
-  }
-  const packageId = PLANOS[plano.trim().toLowerCase()];
-  if (!packageId) {
-    return res.json({ ok: false, erro: `Plano não reconhecido: "${plano}"` });
+  const { email, nome, usuario, senha, plano } = req.body;
+  if (!email || !usuario || !senha) {
+    return res.json({ ok: false, erro: 'Campos obrigatórios: email, usuario, senha' });
   }
   try {
-    log(`📋 Entrega manual: ${nome || 'Cliente'} <${email}> — ${plano}`);
-    const { usuario, senha } = await criarCliente(packageId);
-    await enviarEmail(email, nome || 'Cliente', plano, usuario, senha);
-    registrarVenda({
-      id: Date.now(),
-      timestamp: new Date().toISOString(),
-      nomeCliente: nome || 'Cliente',
-      emailCliente: email,
-      nomeProduto: plano,
-      usuario,
-      senha,
-      status: 'sucesso',
-      erro: null
-    });
-    log(`✅ Entrega manual concluída: ${usuario}`);
+    await enviarEmail(email, nome || 'Cliente', plano || 'Hora do Filme', usuario, senha);
+    log(`📧 Email reenviado manualmente para ${email}`);
     res.json({ ok: true });
   } catch (err) {
     res.json({ ok: false, erro: err.message });
