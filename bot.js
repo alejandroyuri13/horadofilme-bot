@@ -145,56 +145,43 @@ async function iniciarSessao() {
       }
     });
 
-    // Navega para o site
+    // Navega e espera o JS terminar de renderizar
     log('🌐 Abrindo HavokTV...');
-    await page.goto(HAVOKTV_BASE, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await page.goto(HAVOKTV_BASE, { waitUntil: 'networkidle', timeout: 90000 });
+    await page.waitForTimeout(3000); // pausa extra para SPA renderizar
 
-    // Estratégia 1: tenta fazer login via fetch dentro do browser (mesmo domínio, sem CORS)
-    log('🔑 Tentando login via API interna...');
-    const tokenViaFetch = await page.evaluate(async ({ user, pass }) => {
-      const tentativas = [
-        { url: '/api/auth/login',   body: { username: user, password: pass } },
-        { url: '/api/auth/login',   body: { user: user, password: pass } },
-        { url: '/api/auth',         body: { username: user, password: pass } },
-        { url: '/api/login',        body: { username: user, password: pass } },
-        { url: '/api/auth/sign-in', body: { username: user, password: pass } },
-      ];
-      for (const { url, body } of tentativas) {
-        try {
-          const r = await fetch(url, {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-app-version': '3.81', 'locale': 'pt' },
-            body: JSON.stringify(body)
-          });
-          if (!r.ok) continue;
-          const j = await r.json();
-          const t = j?.token || j?.data?.token || j?.access_token;
-          if (t) return t;
-        } catch {}
-      }
-      return null;
-    }, { user: HAVOKTV_USER, pass: HAVOKTV_PASS });
+    // Tira screenshot para debug (salva no log)
+    const inputs = await page.locator('input:not([type="hidden"])').all();
+    log(`🔍 Inputs encontrados na página: ${inputs.length}`);
 
-    if (tokenViaFetch) {
-      token = 'Bearer ' + tokenViaFetch;
-      log('✅ Token obtido via API interna!');
-    }
+    if (inputs.length >= 2) {
+      log('🖱️ Preenchendo formulário de login...');
+      await inputs[0].fill(HAVOKTV_USER);
+      await inputs[1].fill(HAVOKTV_PASS);
 
-    // Estratégia 2: se API falhou, tenta login visual (preenche o formulário)
-    if (!token) {
-      log('🖱️ API falhou, tentando login visual...');
+      // Tenta clicar no botão de submit
       try {
-        await page.waitForSelector('input:not([type="hidden"])', { timeout: 45000 });
-        const inputs = await page.locator('input:not([type="hidden"])').all();
-        if (inputs.length >= 2) {
-          await inputs[0].fill(HAVOKTV_USER);
-          await inputs[1].fill(HAVOKTV_PASS);
-          await page.locator('button[type="submit"]').first().click();
+        await page.locator('button[type="submit"]').first().click();
+      } catch {
+        // Alguns SPAs usam div ou outro elemento como botão
+        await page.keyboard.press('Enter');
+      }
+      await page.waitForTimeout(8000);
+    } else {
+      // Tenta encontrar inputs por outros seletores
+      log('⚠️ Formulário padrão não encontrado, tentando seletores alternativos...');
+      try {
+        await page.waitForSelector('[placeholder*="usu"], [placeholder*="user"], [placeholder*="login"], [type="email"]', { timeout: 20000 });
+        const altInputs = await page.locator('input').all();
+        log(`🔍 Inputs alternativos: ${altInputs.length}`);
+        if (altInputs.length >= 2) {
+          await altInputs[0].fill(HAVOKTV_USER);
+          await altInputs[1].fill(HAVOKTV_PASS);
+          await page.keyboard.press('Enter');
           await page.waitForTimeout(8000);
         }
       } catch (e) {
-        log(`⚠️ Login visual falhou: ${e.message}`);
+        log(`⚠️ Seletores alternativos falharam: ${e.message}`);
       }
     }
 
