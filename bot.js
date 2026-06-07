@@ -109,45 +109,14 @@ setInterval(async () => {
 const HAVOKTV_BASE = 'https://havoktv.top';
 const HAVOKTV_UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// Tenta obter token via API direta (sem browser)
-async function loginViaAPI() {
-  const endpoints = [
-    { url: '/api/auth/login',   body: { username: HAVOKTV_USER, password: HAVOKTV_PASS } },
-    { url: '/api/auth/login',   body: { user: HAVOKTV_USER, password: HAVOKTV_PASS } },
-    { url: '/api/auth',         body: { username: HAVOKTV_USER, password: HAVOKTV_PASS } },
-    { url: '/api/login',        body: { username: HAVOKTV_USER, password: HAVOKTV_PASS } },
-  ];
-
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-    'x-app-version': '3.81',
-    'locale': 'pt',
-    'User-Agent': HAVOKTV_UA,
-    'Origin': HAVOKTV_BASE,
-    'Referer': HAVOKTV_BASE + '/',
-  };
-
-  for (const { url, body } of endpoints) {
-    try {
-      const res = await fetch(HAVOKTV_BASE + url, {
-        method: 'POST', headers, body: JSON.stringify(body)
-      });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const token = json?.token || json?.data?.token || json?.access_token;
-      if (token) {
-        log(`✅ Token obtido via API (${url})`);
-        return 'Bearer ' + token;
-      }
-    } catch {}
+async function iniciarSessao() {
+  if (iniciandoSessao) {
+    await new Promise(r => setTimeout(r, 5000));
+    return sessao;
   }
-  return null;
-}
+  iniciandoSessao = true;
+  log('🔄 Iniciando sessão no HavokTV...');
 
-// Login via Playwright (fallback) — abre browser headless e captura token da rede
-async function loginViaPlaywright() {
-  log('🔄 Tentando login via Playwright...');
   let browser;
   try {
     browser = await chromium.launch({
@@ -165,71 +134,78 @@ async function loginViaPlaywright() {
     const page = await context.newPage();
     let token = null;
 
+    // Captura token de qualquer resposta da API de auth
     page.on('response', async (response) => {
-      if (response.url().includes('/api/auth')) {
+      if (response.url().includes('/api/auth') || response.url().includes('/api/login')) {
         try {
           const json = await response.json();
           const t = json?.token || json?.data?.token || json?.access_token;
-          if (t) token = 'Bearer ' + t;
+          if (t && !token) token = 'Bearer ' + t;
         } catch {}
       }
     });
 
+    // Navega para o site
+    log('🌐 Abrindo HavokTV...');
     await page.goto(HAVOKTV_BASE, { waitUntil: 'domcontentloaded', timeout: 90000 });
-    await page.waitForSelector('input:not([type="hidden"])', { timeout: 60000 });
 
-    const inputs = await page.locator('input:not([type="hidden"])').all();
-    if (inputs.length < 2) throw new Error('Campos de login não encontrados');
-    await inputs[0].fill(HAVOKTV_USER);
-    await inputs[1].fill(HAVOKTV_PASS);
-    await page.locator('button[type="submit"]').click();
-    await page.waitForTimeout(8000);
+    // Estratégia 1: tenta fazer login via fetch dentro do browser (mesmo domínio, sem CORS)
+    log('🔑 Tentando login via API interna...');
+    const tokenViaFetch = await page.evaluate(async ({ user, pass }) => {
+      const tentativas = [
+        { url: '/api/auth/login',   body: { username: user, password: pass } },
+        { url: '/api/auth/login',   body: { user: user, password: pass } },
+        { url: '/api/auth',         body: { username: user, password: pass } },
+        { url: '/api/login',        body: { username: user, password: pass } },
+        { url: '/api/auth/sign-in', body: { username: user, password: pass } },
+      ];
+      for (const { url, body } of tentativas) {
+        try {
+          const r = await fetch(url, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-app-version': '3.81', 'locale': 'pt' },
+            body: JSON.stringify(body)
+          });
+          if (!r.ok) continue;
+          const j = await r.json();
+          const t = j?.token || j?.data?.token || j?.access_token;
+          if (t) return t;
+        } catch {}
+      }
+      return null;
+    }, { user: HAVOKTV_USER, pass: HAVOKTV_PASS });
 
-    if (!token) throw new Error('Token não capturado após login');
+    if (tokenViaFetch) {
+      token = 'Bearer ' + tokenViaFetch;
+      log('✅ Token obtido via API interna!');
+    }
 
-    // Mantém o browser aberto para reutilizar a sessão autenticada
+    // Estratégia 2: se API falhou, tenta login visual (preenche o formulário)
+    if (!token) {
+      log('🖱️ API falhou, tentando login visual...');
+      try {
+        await page.waitForSelector('input:not([type="hidden"])', { timeout: 45000 });
+        const inputs = await page.locator('input:not([type="hidden"])').all();
+        if (inputs.length >= 2) {
+          await inputs[0].fill(HAVOKTV_USER);
+          await inputs[1].fill(HAVOKTV_PASS);
+          await page.locator('button[type="submit"]').first().click();
+          await page.waitForTimeout(8000);
+        }
+      } catch (e) {
+        log(`⚠️ Login visual falhou: ${e.message}`);
+      }
+    }
+
+    if (!token) throw new Error('Não foi possível obter token do HavokTV. Verifique usuário/senha.');
+
     sessao = { browser, page, token, iniciadaEm: new Date() };
-    log('✅ Sessão HavokTV iniciada via Playwright!');
-    return token;
+    log('✅ Sessão HavokTV iniciada!');
+    return sessao;
 
   } catch (err) {
     if (browser) { try { await browser.close(); } catch {} }
-    throw err;
-  }
-}
-
-async function iniciarSessao() {
-  if (iniciandoSessao) {
-    await new Promise(r => setTimeout(r, 5000));
-    return sessao;
-  }
-  iniciandoSessao = true;
-  log('🔄 Iniciando sessão no HavokTV...');
-
-  try {
-    // 1) Tenta API direta (rápido, sem browser)
-    log('🔑 Tentando autenticação via API...');
-    const tokenAPI = await loginViaAPI();
-
-    if (tokenAPI) {
-      // Cria uma page simples para reutilizar na criação de clientes
-      const browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-dev-shm-usage']
-      });
-      const context = await browser.newContext({ userAgent: HAVOKTV_UA });
-      const page = await context.newPage();
-      await page.goto(HAVOKTV_BASE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      sessao = { browser, page, token: tokenAPI, iniciadaEm: new Date() };
-      log('✅ Sessão HavokTV iniciada via API!');
-      return sessao;
-    }
-
-    // 2) Fallback: Playwright com login visual
-    await loginViaPlaywright();
-    return sessao;
-
-  } catch (err) {
     throw err;
   } finally {
     iniciandoSessao = false;
