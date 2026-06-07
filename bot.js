@@ -106,29 +106,56 @@ setInterval(async () => {
   }
 }, RENOVAR_SESSAO_MS);
 
-async function iniciarSessao() {
-  if (iniciandoSessao) {
-    await new Promise(r => setTimeout(r, 5000));
-    return sessao;
-  }
-  iniciandoSessao = true;
-  log('🔄 Iniciando sessão no HavokTV...');
+const HAVOKTV_BASE = 'https://havoktv.top';
+const HAVOKTV_UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+// Tenta obter token via API direta (sem browser)
+async function loginViaAPI() {
+  const endpoints = [
+    { url: '/api/auth/login',   body: { username: HAVOKTV_USER, password: HAVOKTV_PASS } },
+    { url: '/api/auth/login',   body: { user: HAVOKTV_USER, password: HAVOKTV_PASS } },
+    { url: '/api/auth',         body: { username: HAVOKTV_USER, password: HAVOKTV_PASS } },
+    { url: '/api/login',        body: { username: HAVOKTV_USER, password: HAVOKTV_PASS } },
+  ];
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'x-app-version': '3.81',
+    'locale': 'pt',
+    'User-Agent': HAVOKTV_UA,
+    'Origin': HAVOKTV_BASE,
+    'Referer': HAVOKTV_BASE + '/',
+  };
+
+  for (const { url, body } of endpoints) {
+    try {
+      const res = await fetch(HAVOKTV_BASE + url, {
+        method: 'POST', headers, body: JSON.stringify(body)
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const token = json?.token || json?.data?.token || json?.access_token;
+      if (token) {
+        log(`✅ Token obtido via API (${url})`);
+        return 'Bearer ' + token;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+// Login via Playwright (fallback) — abre browser headless e captura token da rede
+async function loginViaPlaywright() {
+  log('🔄 Tentando login via Playwright...');
   let browser;
   try {
     browser = await chromium.launch({
       headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--window-size=1280,800'
-      ]
+      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--window-size=1280,800']
     });
-
     const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      userAgent: HAVOKTV_UA,
       viewport: { width: 1280, height: 800 },
       locale: 'pt-BR'
     });
@@ -139,35 +166,70 @@ async function iniciarSessao() {
     let token = null;
 
     page.on('response', async (response) => {
-      if (response.url().includes('/api/auth/')) {
+      if (response.url().includes('/api/auth')) {
         try {
           const json = await response.json();
-          if (json?.token) token = 'Bearer ' + json.token;
-          if (json?.data?.token) token = 'Bearer ' + json.data.token;
+          const t = json?.token || json?.data?.token || json?.access_token;
+          if (t) token = 'Bearer ' + t;
         } catch {}
       }
     });
 
-    await page.goto('https://havoktv.top', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForSelector('input[type="text"], input[type="email"], input:not([type="hidden"])', { timeout: 30000 });
+    await page.goto(HAVOKTV_BASE, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await page.waitForSelector('input:not([type="hidden"])', { timeout: 60000 });
 
     const inputs = await page.locator('input:not([type="hidden"])').all();
-    if (inputs.length < 2) throw new Error('Campos de login não encontrados no HavokTV');
+    if (inputs.length < 2) throw new Error('Campos de login não encontrados');
     await inputs[0].fill(HAVOKTV_USER);
     await inputs[1].fill(HAVOKTV_PASS);
     await page.locator('button[type="submit"]').click();
-    await page.waitForTimeout(6000);
+    await page.waitForTimeout(8000);
 
-    if (!token) {
-      throw new Error('Token não capturado. Verifique usuário/senha do HavokTV.');
-    }
+    if (!token) throw new Error('Token não capturado após login');
 
+    // Mantém o browser aberto para reutilizar a sessão autenticada
     sessao = { browser, page, token, iniciadaEm: new Date() };
-    log('✅ Sessão HavokTV iniciada!');
-    return sessao;
+    log('✅ Sessão HavokTV iniciada via Playwright!');
+    return token;
 
   } catch (err) {
     if (browser) { try { await browser.close(); } catch {} }
+    throw err;
+  }
+}
+
+async function iniciarSessao() {
+  if (iniciandoSessao) {
+    await new Promise(r => setTimeout(r, 5000));
+    return sessao;
+  }
+  iniciandoSessao = true;
+  log('🔄 Iniciando sessão no HavokTV...');
+
+  try {
+    // 1) Tenta API direta (rápido, sem browser)
+    log('🔑 Tentando autenticação via API...');
+    const tokenAPI = await loginViaAPI();
+
+    if (tokenAPI) {
+      // Cria uma page simples para reutilizar na criação de clientes
+      const browser = await chromium.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-dev-shm-usage']
+      });
+      const context = await browser.newContext({ userAgent: HAVOKTV_UA });
+      const page = await context.newPage();
+      await page.goto(HAVOKTV_BASE, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      sessao = { browser, page, token: tokenAPI, iniciadaEm: new Date() };
+      log('✅ Sessão HavokTV iniciada via API!');
+      return sessao;
+    }
+
+    // 2) Fallback: Playwright com login visual
+    await loginViaPlaywright();
+    return sessao;
+
+  } catch (err) {
     throw err;
   } finally {
     iniciandoSessao = false;
