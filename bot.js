@@ -721,20 +721,21 @@ const dashboard = `<!DOCTYPE html>
     <input type="email" id="reenvioEmail" placeholder="cliente@email.com">
     <label>Nome do cliente</label>
     <input type="text" id="reenvioNome" placeholder="Nome Completo">
-    <label>Usuário IPTV</label>
-    <input type="text" id="reenvioUsuario" placeholder="ex: 4058037">
-    <label>Senha IPTV</label>
-    <input type="text" id="reenvioSenha" placeholder="ex: 7660711">
     <label>Plano</label>
     <select id="reenvioPlano">
-      <option value="Plano Mensal">Plano Mensal</option>
-      <option value="Plano 3 meses">Plano 3 meses</option>
-      <option value="Plano 6 meses">Plano 6 meses</option>
-      <option value="Plano 12 meses">Plano 12 meses</option>
+      <option value="Hora do Filme [1 MÊS]">Hora do Filme [1 MÊS]</option>
+      <option value="Hora do Filme [3 MESES]">Hora do Filme [3 MESES]</option>
+      <option value="Hora do Filme [6 MESES]">Hora do Filme [6 MESES]</option>
+      <option value="Hora do Filme [ANUAL]">Hora do Filme [ANUAL]</option>
+      <option value="Hora do Filme [PLUS]">Hora do Filme [PLUS]</option>
+      <option value="TelaMax | 1MÊS">TelaMax | 1MÊS</option>
+      <option value="TelaMax | 3 MESES">TelaMax | 3 MESES</option>
+      <option value="TelaMax | 6 MESES">TelaMax | 6 MESES</option>
+      <option value="TelaMax | ANUAL">TelaMax | ANUAL</option>
     </select>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="fecharModalReenvio()">Cancelar</button>
-      <button class="btn-primary" onclick="enviarReenvio()">Enviar Email</button>
+      <button class="btn-primary" onclick="enviarReenvio()">Criar Acesso e Enviar</button>
     </div>
   </div>
 </div>
@@ -873,24 +874,30 @@ document.getElementById('modalReenvio').addEventListener('click', e => {
 });
 
 async function enviarReenvio() {
-  const email   = document.getElementById('reenvioEmail').value.trim();
-  const nome    = document.getElementById('reenvioNome').value.trim() || 'Cliente';
-  const usuario = document.getElementById('reenvioUsuario').value.trim();
-  const senha   = document.getElementById('reenvioSenha').value.trim();
-  const plano   = document.getElementById('reenvioPlano').value;
+  const email = document.getElementById('reenvioEmail').value.trim();
+  const nome  = document.getElementById('reenvioNome').value.trim() || 'Cliente';
+  const plano = document.getElementById('reenvioPlano').value;
 
-  if (!email || !usuario || !senha) { toast('⚠️ Preencha email, usuário e senha', 'warn'); return; }
+  if (!email) { toast('⚠️ Preencha o email do cliente', 'warn'); return; }
+
+  const btn = document.querySelector('#modalReenvio .btn-primary');
+  btn.textContent = '⏳ Criando acesso...';
+  btn.disabled = true;
 
   try {
     const r = await fetch('/api/reenviar', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ email, nome, usuario, senha, plano })
+      body: JSON.stringify({ email, nome, plano })
     });
     const d = await r.json();
-    if (d.ok) { toast('✅ Email enviado com sucesso!', 'ok'); fecharModalReenvio(); }
+    if (d.ok) { toast('✅ Acesso criado e email enviado!', 'ok'); fecharModalReenvio(); }
     else       { toast('❌ Erro: ' + d.erro, 'err'); }
   } catch(e) { toast('❌ Falha na requisição', 'err'); }
+  finally {
+    btn.textContent = 'Criar Acesso e Enviar';
+    btn.disabled = false;
+  }
 }
 
 async function reconectar() {
@@ -998,17 +1005,38 @@ app.get('/logs/stream', (req, res) => {
   });
 });
 
-// Reenviar email manualmente
+// Entrega manual — cria acesso no HavokTV e envia email
 app.post('/api/reenviar', async (req, res) => {
-  const { email, nome, usuario, senha, plano } = req.body;
-  if (!email || !usuario || !senha) {
-    return res.json({ ok: false, erro: 'Campos obrigatórios: email, usuario, senha' });
+  const { email, nome, plano } = req.body;
+  if (!email || !plano) {
+    return res.json({ ok: false, erro: 'Campos obrigatórios: email e plano' });
   }
+
+  const nomeProduto = plano;
+  const packageId   = PLANOS[nomeProduto.trim().toLowerCase()];
+  if (!packageId) {
+    return res.json({ ok: false, erro: `Plano não reconhecido: "${nomeProduto}"` });
+  }
+
   try {
-    await enviarEmail(email, nome || 'Cliente', plano || 'Hora do Filme', usuario, senha);
-    log(`📧 Email reenviado manualmente para ${email}`);
-    res.json({ ok: true });
+    log(`📋 Entrega manual: ${nome || 'Cliente'} <${email}> — ${nomeProduto}`);
+    const { usuario, senha } = await criarCliente(packageId);
+    await enviarEmail(email, nome || 'Cliente', nomeProduto, usuario, senha);
+    registrarVenda({
+      id: Date.now(),
+      timestamp: new Date().toISOString(),
+      nomeCliente: nome || 'Cliente',
+      emailCliente: email,
+      nomeProduto,
+      usuario,
+      senha,
+      status: 'sucesso',
+      erro: null
+    });
+    log(`✅ Entrega manual concluída: ${email} — usuário ${usuario}`);
+    res.json({ ok: true, usuario, senha });
   } catch (err) {
+    log(`❌ Falha na entrega manual para ${email}: ${err.message}`);
     res.json({ ok: false, erro: err.message });
   }
 });
