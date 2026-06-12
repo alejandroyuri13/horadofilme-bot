@@ -825,12 +825,8 @@ function conectarSSE() {
   es.onerror = () => { setTimeout(conectarSSE, 3000); };
 }
 
-// Modal reenvio — carrega planos do servidor dinamicamente
+// Modal reenvio
 function abrirModalReenvio() {
-  fetch('/api/planos').then(r=>r.json()).then(planos => {
-    const sel = document.getElementById('reenvioPlano');
-    sel.innerHTML = planos.map(p => `<option value="${p}">${p}</option>`).join('');
-  }).catch(() => {});
   document.getElementById('modalReenvio').classList.add('open');
 }
 function fecharModalReenvio() {
@@ -970,11 +966,6 @@ app.get('/logs/stream', (req, res) => {
     const i = sseClients.indexOf(res);
     if (i >= 0) sseClients.splice(i, 1);
   });
-});
-
-// Lista de planos configurados
-app.get('/api/planos', (req, res) => {
-  res.json(Object.keys(PLANOS_RAW));
 });
 
 // Entrega manual — cria acesso no HavokTV e envia email
