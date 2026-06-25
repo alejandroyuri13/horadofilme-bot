@@ -1,5 +1,6 @@
 const express = require('express');
 const { chromium } = require('playwright');
+const fs = require('fs');
 require('dotenv').config();
 
 // ============================================================
@@ -50,6 +51,53 @@ const PLANOS_RAW        = JSON.parse(process.env.PLANOS);
 const PLANOS            = Object.fromEntries(
   Object.entries(PLANOS_RAW).map(([k, v]) => [k.trim().toLowerCase(), v])
 );
+
+// Sempre criamos contas de 1 mês no HavokTV — economiza créditos
+const PACKAGE_ID_MENSAL = 'ryJDzVzDge';
+
+// Quantidade de meses por nome de plano
+const MESES_POR_PLANO = {
+  'hora do filme [1 mês]':  1,
+  'hora do filme [3 meses]': 3,
+  'hora do filme [6 meses]': 6,
+  'hora do filme [anual]':  12,
+  'hora do filme [plus]':    1,
+  'telamax | 1mês':          1,
+  'telamax | 3 meses':       3,
+  'telamax | 6 meses':       6,
+  'telamax | anual':        12,
+};
+
+// ============================================================
+// POOL DE CREDENCIAIS (2 clientes por conta, sempre 1 mês)
+// ============================================================
+const POOL_FILE = process.env.POOL_FILE || './pool.json';
+let pool = [];
+
+function carregarPool() {
+  try {
+    pool = JSON.parse(fs.readFileSync(POOL_FILE, 'utf8'));
+    const ativas = pool.filter(c => c.ativa).length;
+    console.log(`[Pool] Carregada: ${ativas} contas ativas`);
+  } catch { pool = []; }
+}
+
+function salvarPool() {
+  try { fs.writeFileSync(POOL_FILE, JSON.stringify(pool, null, 2)); } catch {}
+}
+
+function contaComSlot() {
+  return pool.find(c => c.ativa && c.clientes.length < 2);
+}
+
+function novaEntradaPool(usuario, senha, cliente) {
+  const exp = new Date();
+  exp.setDate(exp.getDate() + 30);
+  const entrada = { id: Date.now(), usuario, senha, dataExpiracao: exp.toISOString(), ativa: true, clientes: [cliente] };
+  pool.push(entrada);
+  salvarPool();
+  return entrada;
+}
 
 // ============================================================
 // HISTÓRICO DE VENDAS
@@ -330,7 +378,7 @@ async function processarFila() {
   while (fila.length > 0) {
     const venda = fila.shift();
     try {
-      await processarVenda(venda);
+      await processarVendaComPool(venda);
     } catch (err) {
       log(`❌ Falha definitiva para ${venda.emailCliente}: ${err.message}`);
       registrarVenda({
@@ -351,10 +399,29 @@ async function processarFila() {
   processando = false;
 }
 
-async function processarVenda({ emailCliente, nomeCliente, nomeProduto, packageId }) {
+async function processarVendaComPool({ emailCliente, nomeCliente, nomeProduto }) {
   log(`\n▶ Processando: ${nomeCliente} <${emailCliente}> — ${nomeProduto}`);
 
-  const { usuario, senha } = await criarCliente(packageId);
+  const meses = MESES_POR_PLANO[nomeProduto.trim().toLowerCase()] || 1;
+  const clienteDados = { nome: nomeCliente, email: emailCliente, planoOriginal: nomeProduto, totalMeses: meses, mesesRestantes: meses - 1 };
+
+  let usuario, senha;
+  const slot = contaComSlot();
+
+  if (slot) {
+    usuario = slot.usuario;
+    senha   = slot.senha;
+    slot.clientes.push(clienteDados);
+    salvarPool();
+    log(`♻️ Reusando conta ${usuario} (${slot.clientes.length}/2 slots)`);
+  } else {
+    const creds = await criarCliente(PACKAGE_ID_MENSAL);
+    usuario = creds.usuario;
+    senha   = creds.senha;
+    novaEntradaPool(usuario, senha, clienteDados);
+    log(`✅ Nova conta criada: ${usuario}`);
+  }
+
   await enviarEmail(emailCliente, nomeCliente, nomeProduto, usuario, senha);
 
   registrarVenda({
@@ -371,6 +438,58 @@ async function processarVenda({ emailCliente, nomeCliente, nomeProduto, packageI
 
   log(`✅ Concluído: ${nomeCliente}\n`);
 }
+
+// ============================================================
+// RENOVAÇÃO AUTOMÁTICA (verifica a cada hora)
+// ============================================================
+async function verificarRenovacoes() {
+  const limite = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+  const paraRenovar = pool.filter(c => c.ativa && new Date(c.dataExpiracao) <= limite);
+  if (paraRenovar.length === 0) return;
+
+  log(`\n🔄 ${paraRenovar.length} conta(s) vencendo — processando renovações...`);
+
+  for (const conta of paraRenovar) {
+    conta.ativa = false;
+
+    const paraRenovarClientes = conta.clientes.filter(c => c.mesesRestantes > 0);
+    const concluidos          = conta.clientes.filter(c => c.mesesRestantes <= 0);
+    concluidos.forEach(c => log(`📋 Plano concluído: ${c.email} (${c.planoOriginal})`));
+
+    if (paraRenovarClientes.length > 0) {
+      try {
+        const creds = await criarCliente(PACKAGE_ID_MENSAL);
+        const exp = new Date();
+        exp.setDate(exp.getDate() + 30);
+
+        pool.push({
+          id: Date.now(),
+          usuario: creds.usuario,
+          senha: creds.senha,
+          dataExpiracao: exp.toISOString(),
+          ativa: true,
+          clientes: paraRenovarClientes.map(c => ({ ...c, mesesRestantes: c.mesesRestantes - 1 }))
+        });
+
+        for (const c of paraRenovarClientes) {
+          try {
+            await enviarEmail(c.email, c.nome, c.planoOriginal, creds.usuario, creds.senha);
+            log(`✅ Renovação enviada: ${c.email}`);
+          } catch (e) {
+            log(`❌ Falha ao renovar ${c.email}: ${e.message}`);
+          }
+        }
+      } catch (e) {
+        log(`❌ Erro ao criar conta de renovação: ${e.message}`);
+        conta.ativa = true; // restaura para tentar novamente
+      }
+    }
+
+    salvarPool();
+  }
+}
+
+setInterval(verificarRenovacoes, 60 * 60 * 1000); // a cada hora
 
 // ============================================================
 // DASHBOARD HTML
@@ -968,40 +1087,58 @@ app.get('/logs/stream', (req, res) => {
   });
 });
 
-// Entrega manual — cria acesso no HavokTV e envia email
+// Entrega manual — usa pool (mesma lógica da venda automática)
 app.post('/api/reenviar', async (req, res) => {
   const { email, nome, plano } = req.body;
-  if (!email || !plano) {
-    return res.json({ ok: false, erro: 'Campos obrigatórios: email e plano' });
-  }
+  if (!email || !plano) return res.json({ ok: false, erro: 'Campos obrigatórios: email e plano' });
 
   const nomeProduto = plano;
-  const packageId   = PLANOS[nomeProduto.trim().toLowerCase()];
-  if (!packageId) {
-    return res.json({ ok: false, erro: `Plano não reconhecido: "${nomeProduto}"` });
-  }
+  const meses = MESES_POR_PLANO[nomeProduto.trim().toLowerCase()];
+  if (!meses) return res.json({ ok: false, erro: `Plano não reconhecido: "${nomeProduto}"` });
 
   try {
     log(`📋 Entrega manual: ${nome || 'Cliente'} <${email}> — ${nomeProduto}`);
-    const { usuario, senha } = await criarCliente(packageId);
+
+    const clienteDados = { nome: nome || 'Cliente', email, planoOriginal: nomeProduto, totalMeses: meses, mesesRestantes: meses - 1 };
+    let usuario, senha;
+    const slot = contaComSlot();
+
+    if (slot) {
+      usuario = slot.usuario;
+      senha   = slot.senha;
+      slot.clientes.push(clienteDados);
+      salvarPool();
+      log(`♻️ Reusando conta ${usuario}`);
+    } else {
+      const creds = await criarCliente(PACKAGE_ID_MENSAL);
+      usuario = creds.usuario;
+      senha   = creds.senha;
+      novaEntradaPool(usuario, senha, clienteDados);
+    }
+
     await enviarEmail(email, nome || 'Cliente', nomeProduto, usuario, senha);
-    registrarVenda({
-      id: Date.now(),
-      timestamp: new Date().toISOString(),
-      nomeCliente: nome || 'Cliente',
-      emailCliente: email,
-      nomeProduto,
-      usuario,
-      senha,
-      status: 'sucesso',
-      erro: null
-    });
+    registrarVenda({ id: Date.now(), timestamp: new Date().toISOString(), nomeCliente: nome || 'Cliente', emailCliente: email, nomeProduto, usuario, senha, status: 'sucesso', erro: null });
     log(`✅ Entrega manual concluída: ${email} — usuário ${usuario}`);
     res.json({ ok: true, usuario, senha });
   } catch (err) {
     log(`❌ Falha na entrega manual para ${email}: ${err.message}`);
     res.json({ ok: false, erro: err.message });
   }
+});
+
+// Pool — visualização do estado atual
+app.get('/api/pool', (req, res) => {
+  const ativas = pool.filter(c => c.ativa);
+  res.json({
+    totalContas: ativas.length,
+    slotsLivres: ativas.filter(c => c.clientes.length < 2).length,
+    contas: ativas.map(c => ({
+      usuario: c.usuario,
+      dataExpiracao: c.dataExpiracao,
+      slots: `${c.clientes.length}/2`,
+      clientes: c.clientes.map(cl => ({ nome: cl.nome, email: cl.email, plano: cl.planoOriginal, mesesRestantes: cl.mesesRestantes }))
+    }))
+  });
 });
 
 // Reconectar HavokTV
@@ -1051,20 +1188,20 @@ app.post('/webhook', (req, res) => {
       return res.status(400).json({ status: 'erro', mensagem: 'Email do cliente não encontrado no webhook' });
     }
 
-    // Busca insensível a maiúsculas/minúsculas
-    const packageId = PLANOS[nomeProduto.toLowerCase()];
-    if (!packageId) {
+    // Valida se o plano é reconhecido
+    const mesesPlano = MESES_POR_PLANO[nomeProduto.toLowerCase()];
+    if (!mesesPlano) {
       log(`❌ Plano não reconhecido: "${nomeProduto}"`);
-      log(`Planos configurados: ${Object.keys(PLANOS_RAW).join(' | ')}`);
+      log(`Planos configurados: ${Object.keys(MESES_POR_PLANO).join(' | ')}`);
       return res.status(400).json({
         status: 'erro',
         mensagem: `Plano não reconhecido: "${nomeProduto}"`,
-        planosDisponiveis: Object.keys(PLANOS_RAW)
+        planosDisponiveis: Object.keys(MESES_POR_PLANO)
       });
     }
 
     res.json({ status: 'recebido', posicaoNaFila: fila.length + 1 });
-    adicionarNaFila({ emailCliente, nomeCliente, nomeProduto, packageId });
+    adicionarNaFila({ emailCliente, nomeCliente, nomeProduto });
 
   } catch (err) {
     log(`❌ Erro no webhook: ${err.message}`);
@@ -1077,7 +1214,9 @@ app.post('/webhook', (req, res) => {
 // ============================================================
 app.listen(PORT, async () => {
   log(`\n🎬 Hora do Filme Bot iniciado na porta ${PORT}`);
-  log(`Planos configurados: ${Object.keys(PLANOS).join(' | ')}`);
+  log(`Planos configurados: ${Object.keys(MESES_POR_PLANO).join(' | ')}`);
+  carregarPool();
+  verificarRenovacoes().catch(() => {});
 
   try {
     await iniciarSessao();
