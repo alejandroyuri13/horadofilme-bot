@@ -653,6 +653,13 @@ const dashboard = `<!DOCTYPE html>
   .uptime { font-size: 11px; color: var(--muted); }
   .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 24px; }
 
+  /* Detalhe do cliente */
+  .detalhe-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .detalhe-label { font-size: 12px; color: var(--muted); white-space: nowrap; padding-top: 2px; }
+  .detalhe-val { font-size: 13px; text-align: right; word-break: break-all; }
+  .cred-row { background: rgba(99,102,241,.07); border-radius: 8px; padding: 8px 12px; }
+  tr[onclick]:hover td { background: rgba(99,102,241,.07) !important; }
+
   /* Toast */
   .toast {
     position: fixed; bottom: 24px; right: 24px;
@@ -731,9 +738,9 @@ const dashboard = `<!DOCTYPE html>
     <!-- Histórico de vendas -->
     <div class="card">
       <div class="section-title"><div class="dot"></div> Últimas Vendas</div>
-      <div class="table-wrap">
+      <div class="table-wrap" style="max-height:480px;overflow-y:auto;">
         <table>
-          <thead>
+          <thead style="position:sticky;top:0;background:var(--card);z-index:1;">
             <tr>
               <th>Cliente</th>
               <th>Plano</th>
@@ -795,6 +802,36 @@ const dashboard = `<!DOCTYPE html>
   </div>
 </main>
 
+<!-- Modal detalhe do cliente -->
+<div class="modal-overlay" id="modalDetalhe">
+  <div class="modal" style="width:480px">
+    <h2>👤 Detalhes do Cliente</h2>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px">
+      <div class="detalhe-row"><span class="detalhe-label">Nome</span><span id="detalhe-nome" class="detalhe-val"></span></div>
+      <div class="detalhe-row"><span class="detalhe-label">Email</span><span id="detalhe-email" class="detalhe-val"></span></div>
+      <div class="detalhe-row"><span class="detalhe-label">Plano</span><span id="detalhe-plano" class="detalhe-val"></span></div>
+      <div class="detalhe-row"><span class="detalhe-label">Horário</span><span id="detalhe-hora" class="detalhe-val"></span></div>
+      <div class="detalhe-row"><span class="detalhe-label">Status</span><span id="detalhe-status" class="detalhe-val"></span></div>
+      <div style="border-top:1px solid var(--border);margin:4px 0"></div>
+      <div class="detalhe-row cred-row">
+        <span class="detalhe-label">Usuário HavokTV</span>
+        <span id="detalhe-usuario" class="detalhe-val" style="font-family:monospace;font-size:15px;color:#818cf8;font-weight:700"></span>
+      </div>
+      <div class="detalhe-row cred-row">
+        <span class="detalhe-label">Senha HavokTV</span>
+        <span id="detalhe-senha" class="detalhe-val" style="font-family:monospace;font-size:15px;color:#818cf8;font-weight:700"></span>
+      </div>
+      <div class="detalhe-row" id="detalhe-erro-row" style="display:none">
+        <span class="detalhe-label">Erro</span>
+        <span id="detalhe-erro" class="detalhe-val" style="color:var(--red);font-size:12px"></span>
+      </div>
+    </div>
+    <div class="modal-footer" style="margin-top:20px">
+      <button class="btn-secondary" onclick="document.getElementById('modalDetalhe').classList.remove('open')">Fechar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal reenvio de email -->
 <div class="modal-overlay" id="modalReenvio">
   <div class="modal">
@@ -854,21 +891,40 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+let historicoCache = [];
+
 function renderTabela(hist) {
+  historicoCache = hist || [];
   const tbody = document.getElementById('tabelaVendas');
   if (!hist || hist.length === 0) {
     tbody.innerHTML = '<tr><td colspan="4" class="empty">Nenhuma venda processada ainda</td></tr>';
     return;
   }
-  tbody.innerHTML = hist.slice(0,20).map(v => {
+  tbody.innerHTML = hist.map((v, i) => {
     const badge = v.status === 'sucesso'
       ? '<span class="badge badge-green">✓ OK</span>'
       : '<span class="badge badge-red">✗ Erro</span>';
     const nome = escHtml(v.nomeCliente || '—');
     const plano = escHtml(v.nomeProduto || '—');
     const hora = fmt(v.timestamp);
-    return '<tr><td><div>' + nome + '</div><div style="font-size:11px;color:var(--muted)">' + escHtml(v.emailCliente||'') + '</div></td><td>' + plano + '</td><td>' + hora + '</td><td>' + badge + '</td></tr>';
+    return '<tr style="cursor:pointer" onclick="abrirDetalheCliente(' + i + ')" title="Ver detalhes"><td><div>' + nome + '</div><div style="font-size:11px;color:var(--muted)">' + escHtml(v.emailCliente||'') + '</div></td><td>' + plano + '</td><td>' + hora + '</td><td>' + badge + '</td></tr>';
   }).join('');
+}
+
+function abrirDetalheCliente(idx) {
+  const v = historicoCache[idx];
+  if (!v) return;
+  document.getElementById('detalhe-nome').textContent   = v.nomeCliente || '—';
+  document.getElementById('detalhe-email').textContent  = v.emailCliente || '—';
+  document.getElementById('detalhe-plano').textContent  = v.nomeProduto || '—';
+  document.getElementById('detalhe-hora').textContent   = fmt(v.timestamp);
+  document.getElementById('detalhe-status').textContent = v.status === 'sucesso' ? '✓ Sucesso' : '✗ Erro';
+  document.getElementById('detalhe-status').style.color = v.status === 'sucesso' ? 'var(--green)' : 'var(--red)';
+  document.getElementById('detalhe-usuario').textContent = v.usuario || '—';
+  document.getElementById('detalhe-senha').textContent   = v.senha || '—';
+  document.getElementById('detalhe-erro').textContent   = v.erro || '';
+  document.getElementById('detalhe-erro-row').style.display = v.erro ? 'flex' : 'none';
+  document.getElementById('modalDetalhe').classList.add('open');
 }
 
 function renderPlanos(hist) {
@@ -1027,6 +1083,10 @@ function toast(msg, tipo) {
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 3500);
 }
+
+document.getElementById('modalDetalhe').addEventListener('click', e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
+});
 
 // Inicialização
 atualizar();
