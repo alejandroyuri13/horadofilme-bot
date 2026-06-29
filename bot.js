@@ -100,13 +100,26 @@ function novaEntradaPool(usuario, senha, cliente) {
 }
 
 // ============================================================
-// HISTÓRICO DE VENDAS
+// HISTÓRICO DE VENDAS (persistido em disco)
 // ============================================================
-const historico = [];
+const HISTORICO_FILE = process.env.HISTORICO_FILE || (process.env.POOL_FILE ? process.env.POOL_FILE.replace('pool.json','historico.json') : './historico.json');
+let historico = [];
+
+function carregarHistorico() {
+  try {
+    historico = JSON.parse(fs.readFileSync(HISTORICO_FILE, 'utf8'));
+    console.log(`[Histórico] Carregado: ${historico.length} registros`);
+  } catch { historico = []; }
+}
+
+function salvarHistorico() {
+  try { fs.writeFileSync(HISTORICO_FILE, JSON.stringify(historico, null, 2)); } catch {}
+}
 
 function registrarVenda(dados) {
   historico.unshift(dados);
-  if (historico.length > 500) historico.pop();
+  if (historico.length > 1000) historico.pop();
+  salvarHistorico();
 }
 
 // ============================================================
@@ -1276,6 +1289,7 @@ app.listen(PORT, async () => {
   log(`\n🎬 Hora do Filme Bot iniciado na porta ${PORT}`);
   log(`Planos configurados: ${Object.keys(MESES_POR_PLANO).join(' | ')}`);
   carregarPool();
+  carregarHistorico();
   verificarRenovacoes().catch(() => {});
 
   try {
