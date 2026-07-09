@@ -167,7 +167,7 @@ setInterval(async () => {
   }
 }, RENOVAR_SESSAO_MS);
 
-const HAVOKTV_BASE = 'https://havoktv.top';
+const HAVOKTV_BASE = 'https://havoktv.sigmab.pro/#/sign-in';
 const HAVOKTV_UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 async function iniciarSessao() {
