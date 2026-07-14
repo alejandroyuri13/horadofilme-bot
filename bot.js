@@ -966,7 +966,7 @@ async function atualizar() {
 
     // Cards
     const sucesso = hist.filter(v=>v.status==='sucesso').length;
-    const erros   = hist.filter(v=>v.status==='erro').length;
+    const erros   = hist.filter(v=>v.status==='erro').length; // 'resolvido' não conta
     const hoje = new Date().toDateString();
     const hojeCount = hist.filter(v=>v.status==='sucesso'&&new Date(v.timestamp).toDateString()===hoje).length;
 
@@ -1190,6 +1190,15 @@ app.post('/api/reenviar', async (req, res) => {
     }
 
     await enviarEmail(email, nome || 'Cliente', nomeProduto, usuario, senha);
+
+    // Marca erros anteriores desse email como resolvidos (remove do contador de erros)
+    historico.forEach(v => {
+      if (v.emailCliente === email && v.status === 'erro') {
+        v.status = 'resolvido';
+      }
+    });
+    salvarHistorico();
+
     registrarVenda({ id: Date.now(), timestamp: new Date().toISOString(), nomeCliente: nome || 'Cliente', emailCliente: email, nomeProduto, usuario, senha, status: 'sucesso', erro: null });
     log(`✅ Entrega manual concluída: ${email} — usuário ${usuario}`);
     res.json({ ok: true, usuario, senha });
