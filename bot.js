@@ -22,7 +22,7 @@ function log(msg) {
 // ============================================================
 // VALIDAÇÃO DE VARIÁVEIS
 // ============================================================
-const variaveis = ['HAVOKTV_USER', 'HAVOKTV_PASS', 'BREVO_API_KEY', 'BREVO_TEMPLATE_ID', 'BREVO_EMAIL_REMETENTE', 'HAVOKTV_SERVER_ID', 'PLANOS'];
+const variaveis = ['HAVOKTV_USER', 'HAVOKTV_PASS', 'BREVO_API_KEY', 'BREVO_TEMPLATE_ID', 'BREVO_EMAIL_REMETENTE', 'HAVOKTV_SERVER_ID', 'PLANOS', 'WEBHOOK_SECRET', 'DASHBOARD_USER', 'DASHBOARD_PASS'];
 for (const v of variaveis) {
   if (!process.env[v]) {
     console.log(`❌ Variável obrigatória não definida: ${v}`);
@@ -44,7 +44,9 @@ const BREVO_REMETENTE   = process.env.BREVO_EMAIL_REMETENTE;
 const BREVO_ALERTA      = process.env.BREVO_EMAIL_ALERTA || process.env.BREVO_EMAIL_REMETENTE;
 const SERVER_ID         = process.env.HAVOKTV_SERVER_ID;
 const DOWNLOADER        = process.env.CODIGO_DOWNLOADER || '';
-const WEBHOOK_SECRET    = process.env.WEBHOOK_SECRET || '';
+const WEBHOOK_SECRET    = process.env.WEBHOOK_SECRET;
+const DASHBOARD_USER    = process.env.DASHBOARD_USER;
+const DASHBOARD_PASS    = process.env.DASHBOARD_PASS;
 const PORT              = process.env.PORT || 3000;
 // Normaliza nomes de plano para lowercase sem espaços extras (evita falha por diferença de caixa)
 const PLANOS_RAW        = JSON.parse(process.env.PLANOS);
@@ -503,7 +505,6 @@ async function verificarRenovacoes() {
 }
 
 setInterval(verificarRenovacoes, 60 * 60 * 1000); // a cada hora
-
 // ============================================================
 // DASHBOARD HTML
 // ============================================================
@@ -1108,12 +1109,29 @@ setInterval(atualizar, 5000);
 </script>
 </body>
 </html>`;
-
 // ============================================================
 // ROTAS
 // ============================================================
 const app = express();
 app.use(express.json());
+
+// Autenticação básica — protege o painel e a API (o /webhook fica de fora,
+// pois já é validado pelo WEBHOOK_SECRET da Kirvano)
+app.use((req, res, next) => {
+  if (req.path === '/webhook') return next();
+
+  const header = req.headers.authorization || '';
+  const [scheme, encoded] = header.split(' ');
+  if (scheme === 'Basic' && encoded) {
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    const i = decoded.indexOf(':');
+    const user = decoded.slice(0, i);
+    const pass = decoded.slice(i + 1);
+    if (user === DASHBOARD_USER && pass === DASHBOARD_PASS) return next();
+  }
+  res.setHeader('WWW-Authenticate', 'Basic realm="Hora do Filme"');
+  return res.status(401).send('Autenticação necessária');
+});
 
 // Dashboard HTML
 app.get('/', (req, res) => {
