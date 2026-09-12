@@ -22,7 +22,7 @@ function log(msg) {
 // ============================================================
 // VALIDAÇÃO DE VARIÁVEIS
 // ============================================================
-const variaveis = ['HAVOKTV_USER', 'HAVOKTV_PASS', 'BREVO_API_KEY', 'BREVO_TEMPLATE_ID', 'BREVO_EMAIL_REMETENTE', 'HAVOKTV_SERVER_ID', 'PLANOS', 'WEBHOOK_SECRET', 'DASHBOARD_USER', 'DASHBOARD_PASS'];
+const variaveis = ['TIGER_USER', 'TIGER_PASS', 'BREVO_API_KEY', 'BREVO_TEMPLATE_ID', 'BREVO_EMAIL_REMETENTE', 'TIGER_SERVER_ID', 'PLANOS', 'WEBHOOK_SECRET', 'DASHBOARD_USER', 'DASHBOARD_PASS'];
 for (const v of variaveis) {
   if (!process.env[v]) {
     console.log(`❌ Variável obrigatória não definida: ${v}`);
@@ -36,13 +36,13 @@ try { JSON.parse(process.env.PLANOS); } catch {
   process.exit(1);
 }
 
-const HAVOKTV_USER      = process.env.HAVOKTV_USER;
-const HAVOKTV_PASS      = process.env.HAVOKTV_PASS;
+const TIGER_USER        = process.env.TIGER_USER;
+const TIGER_PASS        = process.env.TIGER_PASS;
 const BREVO_API_KEY     = process.env.BREVO_API_KEY;
 const BREVO_TEMPLATE_ID = parseInt(process.env.BREVO_TEMPLATE_ID);
 const BREVO_REMETENTE   = process.env.BREVO_EMAIL_REMETENTE;
 const BREVO_ALERTA      = process.env.BREVO_EMAIL_ALERTA || process.env.BREVO_EMAIL_REMETENTE;
-const SERVER_ID         = process.env.HAVOKTV_SERVER_ID;
+const SERVER_ID         = process.env.TIGER_SERVER_ID;
 const DOWNLOADER        = process.env.CODIGO_DOWNLOADER || '';
 const WEBHOOK_SECRET    = process.env.WEBHOOK_SECRET;
 const DASHBOARD_USER    = process.env.DASHBOARD_USER;
@@ -54,8 +54,8 @@ const PLANOS            = Object.fromEntries(
   Object.entries(PLANOS_RAW).map(([k, v]) => [k.trim().toLowerCase(), v])
 );
 
-// Sempre criamos contas de 1 mês no HavokTV — economiza créditos
-const PACKAGE_ID_MENSAL = 'ryJDzVzDge';
+// Sempre criamos contas de 1 mês na Tiger (servidor OURO, pacote C/ADULTO) — economiza créditos
+const PACKAGE_ID_MENSAL = 'RYAWRk1jlx';
 
 // Quantidade de meses por nome de plano
 const MESES_POR_PLANO = {
@@ -64,10 +64,6 @@ const MESES_POR_PLANO = {
   'hora do filme [6 meses]': 6,
   'hora do filme [anual]':  12,
   'hora do filme [plus]':    1,
-  'telamax | 1mês':          1,
-  'telamax | 3 meses':       3,
-  'telamax | 6 meses':       6,
-  'telamax | anual':        12,
 };
 
 // ============================================================
@@ -150,7 +146,7 @@ async function enviarAlertaFalha(venda, motivo) {
 }
 
 // ============================================================
-// SESSÃO PERSISTENTE DO HAVOKTV
+// SESSÃO PERSISTENTE DA TIGER
 // ============================================================
 let sessao = null;
 let iniciandoSessao = false;
@@ -159,7 +155,7 @@ let iniciandoSessao = false;
 const RENOVAR_SESSAO_MS = 10 * 60 * 60 * 1000;
 setInterval(async () => {
   if (sessao && !processando) {
-    log('🔄 Renovação periódica da sessão HavokTV...');
+    log('🔄 Renovação periódica da sessão Tiger...');
     await invalidarSessao();
     try {
       await iniciarSessao();
@@ -169,8 +165,8 @@ setInterval(async () => {
   }
 }, RENOVAR_SESSAO_MS);
 
-const HAVOKTV_BASE = 'https://painelcinehub.top';
-const HAVOKTV_UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const TIGER_BASE = 'https://tigreagile.uk';
+const TIGER_UA   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 async function iniciarSessao() {
   if (iniciandoSessao) {
@@ -178,7 +174,7 @@ async function iniciarSessao() {
     return sessao;
   }
   iniciandoSessao = true;
-  log('🔄 Iniciando sessão no HavokTV...');
+  log('🔄 Iniciando sessão na Tiger...');
 
   let browser;
   try {
@@ -187,7 +183,7 @@ async function iniciarSessao() {
       args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled', '--window-size=1280,800']
     });
     const context = await browser.newContext({
-      userAgent: HAVOKTV_UA,
+      userAgent: TIGER_UA,
       viewport: { width: 1280, height: 800 },
       locale: 'pt-BR'
     });
@@ -209,8 +205,8 @@ async function iniciarSessao() {
     });
 
     // Navega e espera o JS terminar de renderizar
-    log('🌐 Abrindo HavokTV...');
-    await page.goto(HAVOKTV_BASE, { waitUntil: 'networkidle', timeout: 90000 });
+    log('🌐 Abrindo Tiger...');
+    await page.goto(TIGER_BASE, { waitUntil: 'networkidle', timeout: 90000 });
     await page.waitForTimeout(3000); // pausa extra para SPA renderizar
 
     // Tira screenshot para debug (salva no log)
@@ -219,8 +215,8 @@ async function iniciarSessao() {
 
     if (inputs.length >= 2) {
       log('🖱️ Preenchendo formulário de login...');
-      await inputs[0].fill(HAVOKTV_USER);
-      await inputs[1].fill(HAVOKTV_PASS);
+      await inputs[0].fill(TIGER_USER);
+      await inputs[1].fill(TIGER_PASS);
 
       // Tenta clicar no botão de submit
       try {
@@ -238,8 +234,8 @@ async function iniciarSessao() {
         const altInputs = await page.locator('input').all();
         log(`🔍 Inputs alternativos: ${altInputs.length}`);
         if (altInputs.length >= 2) {
-          await altInputs[0].fill(HAVOKTV_USER);
-          await altInputs[1].fill(HAVOKTV_PASS);
+          await altInputs[0].fill(TIGER_USER);
+          await altInputs[1].fill(TIGER_PASS);
           await page.keyboard.press('Enter');
           await page.waitForTimeout(8000);
         }
@@ -248,10 +244,10 @@ async function iniciarSessao() {
       }
     }
 
-    if (!token) throw new Error('Não foi possível obter token do HavokTV. Verifique usuário/senha.');
+    if (!token) throw new Error('Não foi possível obter token da Tiger. Verifique usuário/senha (ou possível bloqueio anti-bot do Cloudflare).');
 
     sessao = { browser, page, token, iniciadaEm: new Date() };
-    log('✅ Sessão HavokTV iniciada!');
+    log('✅ Sessão Tiger iniciada!');
     return sessao;
 
   } catch (err) {
@@ -276,7 +272,7 @@ async function invalidarSessao() {
 }
 
 // ============================================================
-// CRIAR CLIENTE NO HAVOKTV (com retry)
+// CRIAR CLIENTE NA TIGER (com retry)
 // ============================================================
 async function criarCliente(packageId, tentativa = 1) {
   const MAX = 3;
@@ -294,8 +290,6 @@ async function criarCliente(packageId, tentativa = 1) {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
-          'x-app-version': '3.81',
-          'locale': 'pt',
           'Authorization': token
         },
         body: JSON.stringify({
@@ -303,7 +297,7 @@ async function criarCliente(packageId, tentativa = 1) {
           package_id: packageId,
           username: usuario,
           password: senha,
-          connections: 3,
+          connections: 2,
           bouquets: '',
           parent_can_edit_personal_data: 'YES'
         })
@@ -321,7 +315,7 @@ async function criarCliente(packageId, tentativa = 1) {
     }
 
     if (resultado.status !== 200 && resultado.status !== 201) {
-      throw new Error(`HavokTV retornou ${resultado.status}: ${JSON.stringify(resultado.data)}`);
+      throw new Error(`Tiger retornou ${resultado.status}: ${JSON.stringify(resultado.data)}`);
     }
 
     const usuario = resultado.data?.data?.username || resultado.usuario;
@@ -737,7 +731,7 @@ const dashboard = `<!DOCTYPE html>
       📧 Reenviar Email Manualmente
     </button>
     <button class="btn-secondary" onclick="reconectar()">
-      🔄 Reconectar HavokTV
+      🔄 Reconectar Tiger
     </button>
     <button class="btn-secondary" onclick="limparLogs()">
       🗑️ Limpar Logs
@@ -777,8 +771,8 @@ const dashboard = `<!DOCTYPE html>
         <table>
           <tbody>
             <tr>
-              <td style="color:var(--muted);font-size:13px">HavokTV</td>
-              <td><span class="badge" id="havokBadge">—</span></td>
+              <td style="color:var(--muted);font-size:13px">Tiger</td>
+              <td><span class="badge" id="tigerBadge">—</span></td>
             </tr>
             <tr>
               <td style="color:var(--muted);font-size:13px">Brevo (Email)</td>
@@ -828,11 +822,11 @@ const dashboard = `<!DOCTYPE html>
       <div class="detalhe-row"><span class="detalhe-label">Status</span><span id="detalhe-status" class="detalhe-val"></span></div>
       <div style="border-top:1px solid var(--border);margin:4px 0"></div>
       <div class="detalhe-row cred-row">
-        <span class="detalhe-label">Usuário HavokTV</span>
+        <span class="detalhe-label">Usuário Tiger</span>
         <span id="detalhe-usuario" class="detalhe-val" style="font-family:monospace;font-size:15px;color:#818cf8;font-weight:700"></span>
       </div>
       <div class="detalhe-row cred-row">
-        <span class="detalhe-label">Senha HavokTV</span>
+        <span class="detalhe-label">Senha Tiger</span>
         <span id="detalhe-senha" class="detalhe-val" style="font-family:monospace;font-size:15px;color:#818cf8;font-weight:700"></span>
       </div>
       <div class="detalhe-row" id="detalhe-erro-row" style="display:none">
@@ -861,10 +855,6 @@ const dashboard = `<!DOCTYPE html>
       <option value="Hora do Filme [6 MESES]">Hora do Filme [6 MESES]</option>
       <option value="Hora do Filme [ANUAL]">Hora do Filme [ANUAL]</option>
       <option value="Hora do Filme [PLUS]">Hora do Filme [PLUS]</option>
-      <option value="TelaMax | 1MÊS">TelaMax | 1MÊS</option>
-      <option value="TelaMax | 3 MESES">TelaMax | 3 MESES</option>
-      <option value="TelaMax | 6 MESES">TelaMax | 6 MESES</option>
-      <option value="TelaMax | ANUAL">TelaMax | ANUAL</option>
     </select>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="fecharModalReenvio()">Cancelar</button>
@@ -885,7 +875,7 @@ function fmt(iso) {
 }
 
 function classificarLog(linha) {
-  if (linha.includes('✅') || linha.includes('Sessão HavokTV iniciada')) return 'ok';
+  if (linha.includes('✅') || linha.includes('Sessão Tiger iniciada')) return 'ok';
   if (linha.includes('❌') || linha.includes('falhou') || linha.includes('Falha')) return 'err';
   if (linha.includes('⚠️') || linha.includes('renovando')) return 'warn';
   if (linha.includes('🔄') || linha.includes('▶') || linha.includes('📥') || linha.includes('Bot iniciado')) return 'info';
@@ -978,9 +968,9 @@ async function atualizar() {
     document.getElementById('dataHoje').textContent = new Date().toLocaleDateString('pt-BR');
     document.getElementById('filaStatus').textContent = status.processando ? '⚡ Processando agora' : 'Aguardando vendas';
 
-    // HavokTV badge
-    const hb = document.getElementById('havokBadge');
-    if (status.sessaoHavokTV === 'ativa') {
+    // Tiger badge
+    const hb = document.getElementById('tigerBadge');
+    if (status.sessaoTiger === 'ativa') {
       hb.className = 'badge badge-green'; hb.textContent = '✓ Conectado';
     } else {
       hb.className = 'badge badge-red'; hb.textContent = '✗ Desconectado';
@@ -1053,7 +1043,7 @@ async function enviarReenvio() {
 }
 
 async function reconectar() {
-  toast('🔄 Reconectando ao HavokTV...', 'info');
+  toast('🔄 Reconectando ao Tiger...', 'info');
   try {
     const r = await fetch('/api/reconectar', { method: 'POST' });
     const d = await r.json();
@@ -1144,7 +1134,7 @@ app.get('/api/status', (req, res) => {
   res.json({
     bot: 'HoraDoFilme',
     status: 'online',
-    sessaoHavokTV: sessao ? 'ativa' : 'inativa',
+    sessaoTiger: sessao ? 'ativa' : 'inativa',
     vendasNaFila: fila.length,
     processando,
     uptime: process.uptime()
@@ -1241,7 +1231,7 @@ app.get('/api/pool', (req, res) => {
   });
 });
 
-// Reconectar HavokTV
+// Reconectar Tiger
 app.post('/api/reconectar', async (req, res) => {
   try {
     await invalidarSessao();
